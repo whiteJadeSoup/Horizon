@@ -210,26 +210,22 @@ def render_feishu(
         for i, t in enumerate(tldr.get("trends", []), 1):
             lines.append(f"{i}. {t}")
         lines.append("")
-    # 每板块 Top3 → 全局按分数降序，板块间用分隔线
-    all_picks: list[ContentItem] = []
-    for c in range(1, 6):
-        all_picks.extend(by_cat.get(c, []))
-    all_picks.sort(key=lambda x: -(x.score or 0))
+    # 每板块 Top N → 按章节顺序(1→5)展示，章节内保持信源优先级+分数，板块间用分隔线
     prev_cat = None
-    for it in all_picks:
-        c = it.category or it.cat
-        if prev_cat is not None and c != prev_cat:
-            lines.append("━━━━━━━━━━━━━━")
-        prev_cat = c
-        a = analyses.get(it.title, {})
-        brief = a.get("brief", "")
-        icon = CAT_ICON.get(c, "·")
-        cat_name = CAT_NAMES.get(c, "")
-        lines.append(f"{icon} **{it.score}** 【{cat_name}】{it.title}")
-        if brief:
-            lines.append(brief)
-        lines.append(it.url)
-        lines.append("")
+    for c in range(1, 6):
+        for it in by_cat.get(c, []):
+            if prev_cat is not None and c != prev_cat:
+                lines.append("━━━━━━━━━━━━━━")
+            prev_cat = c
+            a = analyses.get(it.title, {})
+            brief = a.get("brief", "")
+            icon = CAT_ICON.get(c, "·")
+            cat_name = CAT_NAMES.get(c, "")
+            lines.append(f"{icon} **{it.score}** 【{cat_name}】{it.title}")
+            if brief:
+                lines.append(brief)
+            lines.append(it.url)
+            lines.append("")
     lines.append("━━━━━━━━━━━━━━")
     lines.append(f"📄 **全文版（每章节最多 10 条，含逐条深入分析）**：{SITE_URL}")
     return "\n".join(lines).strip()
