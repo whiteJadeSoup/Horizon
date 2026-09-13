@@ -76,14 +76,32 @@ def _score_badge(score: float) -> str:
 
 
 def _selected_by_section(selected: list[ContentItem], max_per: int = 10) -> dict[int, list[ContentItem]]:
+    """章节内先按信源优先级(_SRC_PRIORITY)，同优先级按分数降序。
+
+    配额规则(用户 2026-09-13 决策)：
+    - cat3 创业动态：大厂/宏观(sublabel=big) 每期硬上限 3 条，名额让给早期实战(startup)
+    - cat4 赚钱模式：野路子(sublabel=wild) 整体前移，确保 Top3 至少 1 条
+    """
+    BIG_CAP = {3: 3}
     out: dict[int, list[ContentItem]] = {}
-    # 章节内先按信源优先级（_SRC_PRIORITY），同优先级按分数降序
-    for it in sorted(selected, key=lambda x: (_src_rank(x.category or x.cat, x.src), -(x.score or 0))):
+    ranked = sorted(selected, key=lambda x: (_src_rank(x.category or x.cat, x.src), -(x.score or 0)))
+    for it in ranked:
         c = it.category or it.cat
-        if c not in out:
-            out[c] = []
-        if len(out[c]) < max_per:
-            out[c].append(it)
+        bucket = out.setdefault(c, [])
+        if len(bucket) >= max_per:
+            continue
+        cap = BIG_CAP.get(c)
+        if (cap is not None and it.extra.get("sublabel") == "big"
+                and sum(1 for b in bucket if b.extra.get("sublabel") == "big") >= cap):
+            continue
+        bucket.append(it)
+    # cat4: wild 条目整体前移（组内保持信源优先级+分数序）
+    cat4 = out.get(4)
+    if cat4:
+        wild = [x for x in cat4 if x.extra.get("sublabel") == "wild"]
+        rest = [x for x in cat4 if x.extra.get("sublabel") != "wild"]
+        if wild and rest:
+            out[4] = wild + rest
     return out
 
 
@@ -146,6 +164,8 @@ footer{{margin-top:40px;color:#8b949e;font-size:.85em;text-align:center}}
                                   ("why_pay", "为什么会付钱"), ("biz", "商业模式"),
                                   ("moat", "核心护城河"))
                 ) + "</div>")
+            if c == 4 and a.get("risk"):
+                P.append(f"<div class='srow'><b>⚠️ 风险与合规</b>：{html.escape(a['risk'])}</div>")
             if c == 5 and a.get("flow"):
                 P.append('<div class="struct">'
                          + f"<div class='srow'><b>核心流程</b>：{html.escape(a['flow'])}</div>"
@@ -187,6 +207,8 @@ def render_full_markdown(
                 L.append(f"  - **为什么会付钱**：{a['why_pay']}")
                 L.append(f"  - **商业模式**：{a['biz']}")
                 L.append(f"  - **核心护城河**：{a['moat']}")
+            if c == 4 and a.get("risk"):
+                L.append(f"  - **⚠️ 风险与合规**：{a['risk']}")
             if c == 5 and a.get("flow"):
                 L.append("")
                 L.append(f"  - **核心流程**：{a['flow']}")

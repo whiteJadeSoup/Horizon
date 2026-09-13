@@ -69,20 +69,26 @@ class SourceConfig:
         self.reddit_subs = reddit_subs or [
             "SideProject", "SaaS", "Entrepreneur", "entrepreneurship",
             "startups", "LocalLLaMA", "MachineLearning", "artificial",
-            "Startup_Ideas",
+            "Startup_Ideas", "sidehustle", "EntrepreneurRideAlong", "juststart",
         ]
         self.reddit_sorts = reddit_sorts or {"default": "top", "LocalLLaMA": "new"}
+        # 早期生意信号词(英文)：搜的是「跑通/首客/闷声」瞬间，不是品类词(中转/代充=红海存量)
         self.twitter_queries = twitter_queries or [
-            'AI startup', 'SaaS revenue', 'indie hacker', 'AI workflow',
+            'first paying customer', 'just hit MRR', 'boring business AI',
+            'silent cash flow', 'nobody knows this', 'found 10 customers',
+            'AI side hustle', 'unsexy business', 'making money with AI',
         ]
+        # 实战派优先：砍纯宏观大V(sama/pmarca/tszzl)，换 build-in-public 独立开发者
         self.twitter_handles = twitter_handles or [
-            "samaltman", "sama", "pmarca", "levelsio", "tszzl",
+            "levelsio", "marc_louvion", "dannypostma", "yongfook",
         ]
         self.fetch_hn = fetch_hn
         self.fetch_ph = fetch_ph
         self.cn_feeds = cn_feeds or [
             ("机器之心", "https://www.jiqizhixin.com/rss"),
             ("量子位", "https://www.qbitai.com/feed"),
+            ("V2EX分享创造", "https://www.v2ex.com/feed/create.xml"),
+            ("V2EX奇思妙想", "https://www.v2ex.com/feed/ideas.xml"),
         ]
 
 
