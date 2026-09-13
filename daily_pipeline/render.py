@@ -17,6 +17,17 @@ from .fetch import CAT_NAMES, ContentItem
 log = logging.getLogger("horizon_daily.render")
 
 SITE_URL = os.environ.get("HORIZON_SITE_URL", "https://whitejadesoup.github.io/Horizon/")
+
+
+def daily_post_url(today: str) -> str:
+    """当日全文版 permalink —— 唯一拼接点。
+
+    对应 docs/_posts/{today}-summary-zh.md 在 Jekyll 下的线上 URL：
+    {SITE_URL}daily/YYYY/MM/DD/summary-zh.html
+    飞书/邮件等任何外发渠道的「全文版」链接都必须经由此函数生成，禁止手拼。
+    """
+    y, m, d = today.split("-")
+    return f"{SITE_URL}daily/{y}/{m}/{d}/summary-zh.html"
 SECTIONS_FULL = {
     1: "一、技术前沿发展",
     2: "二、创业产品",
@@ -227,6 +238,5 @@ def render_feishu(
             lines.append(it.url)
             lines.append("")
     lines.append("━━━━━━━━━━━━━━")
-    y, m, d = today.split("-")
-    lines.append(f"📄 **全文版（每章节最多 10 条，含逐条深入分析）**：{SITE_URL}daily/{y}/{m}/{d}/summary-zh.html")
+    lines.append(f"📄 **全文版（每章节最多 10 条，含逐条深入分析）**：{daily_post_url(today)}")
     return "\n".join(lines).strip()
