@@ -227,5 +227,6 @@ def render_feishu(
             lines.append(it.url)
             lines.append("")
     lines.append("━━━━━━━━━━━━━━")
-    lines.append(f"📄 **全文版（每章节最多 10 条，含逐条深入分析）**：{SITE_URL}")
+    y, m, d = today.split("-")
+    lines.append(f"📄 **全文版（每章节最多 10 条，含逐条深入分析）**：{SITE_URL}daily/{y}/{m}/{d}/summary-zh.html")
     return "\n".join(lines).strip()
