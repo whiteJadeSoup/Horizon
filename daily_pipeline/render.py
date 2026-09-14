@@ -44,8 +44,8 @@ SECTIONS_FULL = {
 # AI工作流: X > HN > 其他
 _SRC_PRIORITY: dict[int, list[tuple[str, ...]]] = {
     1: [("hacker", "show hn"), ("量子位",), ("x/",)],
-    2: [("product hunt",), ("r/",), ("hacker", "show hn"), ("x/",)],
-    3: [("x/",), ("r/",), ("hacker", "show hn")],
+    2: [("yc",), ("product hunt",), ("r/",), ("hacker", "show hn"), ("x/",)],
+    3: [("yc",), ("x/",), ("r/",), ("hacker", "show hn")],
     4: [("x/",), ("r/",), ("hacker", "show hn")],
     5: [("x/",), ("hacker", "show hn")],
 }

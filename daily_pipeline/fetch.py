@@ -126,6 +126,8 @@ async def fetch_all(cfg: SourceConfig, hours: int = 48) -> list[ContentItem]:
             await asyncio.sleep(2)
         for name, url in cfg.cn_feeds:
             await _fetch_rss(client, url, name, since, items)
+        # YC 孵化器 launches（用户 2026-09-14 指定信源：新入选/新发布公司名单）
+        await _fetch_yc_launches(client, since, items)
     # X: twitterapi.io（有 key 才启，401 静默跳过）在 client 生命周期内单独跑
     if os.environ.get("TWITTERAPI_IO_KEY"):
         await _fetch_twitter(cfg, since, items)
@@ -316,6 +318,52 @@ async def _fetch_rss(
             continue
         out.append(ContentItem(title=title, url=e.get("link", ""), src=name,
                                cat=CAT_TECH, published=p))
+
+
+async def _fetch_yc_launches(client: httpx.AsyncClient, since: dt.datetime, out: list[ContentItem]) -> None:
+    """YC 孵化器 launches：新入选/新发布公司名单（用户 2026-09-14 指定信源）。
+    页面内嵌 {"hits":[...]} JSON：title/tagline/batch/created_at/company，每页20条。
+    注意：无参数首页=最新排序；?page=N 是另一套排序(旧数据)，不得用翻页参数。
+    初始归类 cat=CAT_PRODUCT，由 LLM 打分时再归入 cat2/cat3。"""
+    try:
+        r = await client.get("https://www.ycombinator.com/launches")
+        r.raise_for_status()
+    except Exception as e:
+        log.warning("YC launches fail: %s", e)
+        return
+    i = r.text.find('{"hits":')
+    if i < 0:
+        log.warning("YC launches: no hits JSON")
+        return
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(r.text[i:])
+    except ValueError as e:
+        log.warning("YC launches JSON parse fail: %s", e)
+        return
+    for h in obj.get("hits", []):
+        try:
+            p = dt.datetime.fromisoformat(str(h.get("created_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if p < since:
+            continue
+        title = (h.get("title") or "").strip()
+        tagline = (h.get("tagline") or "").strip()
+        if not title:
+            continue
+        slug = h.get("slug") or ""
+        url = f"https://www.ycombinator.com/launches/{slug}" if slug else "https://www.ycombinator.com/launches"
+        batch = (h.get("batch") or "").strip()
+        text = f"{title}: {tagline}" if tagline else title
+        if batch:
+            text = f"{text} [YC {batch}]"
+        out.append(ContentItem(
+            title=text[:150],
+            url=url,
+            src="YC",
+            cat=CAT_PRODUCT,
+            published=p,
+        ))
 
 
 async def _fetch_twitter(cfg: SourceConfig, since: dt.datetime, out: list[ContentItem]) -> None:
