@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ log = logging.getLogger("horizon_daily.llm")
 MODEL = os.environ.get("HORIZON_LLM_MODEL", "glm-5-3-flash")
 BASE_URL = os.environ.get("HORIZON_LLM_BASE", "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions")
 MAX_ANALYSIS_TOKENS = 8000
-BATCH_SCORE = 35
+BATCH_SCORE = 35  # 打分 prompt v8 (2026-09-22): 时效审查淘汰旧文 + 行内附发布日期
 BATCH_ANALYSIS = 6   # 五要素板块更小批次防截断
 RETRIES = 4
 
@@ -82,6 +83,18 @@ def _extract_json_array(txt: str) -> Optional[list]:
         return None
 
 
+def _pubtag(p) -> str:
+    """published 可能是 datetime（fetch 期）或 ISO 字符串（skip-fetch 恢复期），统一转日期标签。"""
+    if isinstance(p, str):
+        try:
+            p = dt.datetime.fromisoformat(p)
+        except ValueError:
+            return "日期未知"
+    if isinstance(p, dt.datetime):
+        return p.strftime("%Y-%m-%d")
+    return "日期未知"
+
+
 def _extract_json_obj(txt: str) -> Optional[dict]:
     txt = _strip_fence(txt)
     try:
@@ -90,13 +103,77 @@ def _extract_json_obj(txt: str) -> Optional[dict]:
         return None
 
 
+def _extract_json_objects(txt: str) -> list[dict]:
+    """从残破的 LLM 输出（截断/夹带文字/裸换行）中抢救所有可解析的 JSON 对象，按出现顺序。"""
+    txt = _strip_fence(txt)
+    out: list[dict] = []
+    depth, start, in_str, esc = 0, -1, False, False
+    for i, ch in enumerate(txt):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    raw = txt[start:i + 1]
+                    e = None
+                    for frag in (raw,
+                                 re.sub(r"(?<!\\)\t", "\\t", re.sub(r"(?<!\\)\n", "\\n", raw))):
+                        try:
+                            e = json.loads(frag)
+                            break
+                        except Exception:
+                            continue
+                    if isinstance(e, dict):
+                        out.append(e)
+                    start = -1
+    return out
+
+
+def _absorb(arr: list, chunk: list, results: dict) -> int:
+    """把 LLM 输出的分析对象吸收进 results。
+    所有对象的 i 字段有效且唯一时按 i 对齐（数量不齐也可信，如截断/跳条）；
+    否则退回顺序对齐（模型输出顺序=输入顺序）。返回吸收条数。"""
+    if not arr:
+        return 0
+    idxs = [e.get("i") if isinstance(e, dict) else None for e in arr]
+    use_i = (all(isinstance(x, int) and 0 <= x < len(chunk) for x in idxs)
+             and len(set(idxs)) == len(arr))
+    n = 0
+    for pos, e in enumerate(arr):
+        if not isinstance(e, dict) or not e.get("brief"):
+            continue
+        j = e["i"] if use_i else pos
+        if (use_i or pos < len(chunk)) and isinstance(j, int) and 0 <= j < len(chunk):
+            results[chunk[j][1].title] = e
+            n += 1
+    return n
+
+
 def score_and_classify(items: list[ContentItem]) -> dict[int, tuple[float, int]]:
     """分批打分+归类。返回 {item_index: (score, category)}。"""
     out: dict[int, tuple[float, int]] = {}
     for start in range(0, len(items), BATCH_SCORE):
         batch = items[start:start + BATCH_SCORE]
-        lines = "\n".join(f"{j}| {it.title[:110]} [{it.src}]" for j, it in enumerate(batch))
+        def _datetag(it: ContentItem) -> str:
+            return f" 发布:{_pubtag(it.published)}"
+
+        lines = "\n".join(f"{j}| {it.title[:110]} [{it.src}]{_datetag(it)}"
+                          for j, it in enumerate(batch))
         prompt = f"""你是为一位中国创业者筛选日报的编辑。对下列资讯逐条打分(0-10)：对"了解创业产品/商业模式/赚钱方式/技术前沿/AI效率"的价值。0-3=噪音,4-5=一般,6-7=值得看,8+=必看。
+先做时效审查：明显是多年前的旧文/旧闻（过时的产品发布、早已失效的经验）直接 0 分淘汰；发布日期未知但内容明显陈旧（如提及多年前的年份/事件）从严；旧但观点至今成立、对当下创业仍有启发的可正常打分。
 同时归入唯一章节: 1=技术前沿(机器人/大模型/AI研究) 2=创业产品(新AI应用/SaaS/硬件) 3=创业动态(行业事件/大佬言论/讨论) 4=赚钱模式(收入/商业化/案例) 5=AI工作流(提示词/工具/效率方法)。
 子标签k(仅描述性归类，绝不影响打分高低): cat3用big(大厂/宏观/大佬言论)或startup(早期创业实战)；cat4用wild(野路子/卖水人/早期蓝海)或biz(常规商业模式/收入)；cat1/cat5用tech；cat2用other。
 只输出JSON数组: [{{"i":编号,"s":分数,"c":章节号,"k":子标签}}]，无其他文字，无markdown围栏。
@@ -139,10 +216,13 @@ def _analysis_field_spec(cat: int) -> str:
             '"analysis":"分析:为什么值得注意(3-4句)", "think":"思考:对创业者的启示(2-3句)"')
 
 
-def analyze(items: list[ContentItem], scores: dict) -> dict[str, dict]:
-    """对入选条目生成结构化分析。返回 {title: analysis_dict}。支持增量（已有则跳过）。
-    scores 值为 (score, category) 或 (score, category, sublabel)。"""
-    results: dict[str, dict] = {}
+def analyze(items: list[ContentItem], scores: dict,
+            existing: Optional[dict[str, dict]] = None) -> dict[str, dict]:
+    """对入选条目生成结构化分析。返回 {title: analysis_dict}。
+    existing: 已有分析（标题命中则跳过，用于增量/补漏）。
+    scores 值为 (score, category) 或 (score, category, sublabel)。
+    容错：解析失败→逐对象抢救；缺漏→3条小批重试；仍失败→ERROR 日志，绝不整批静默丢失。"""
+    results: dict[str, dict] = dict(existing or {})
     # 按板块分组
     by_cat: dict[int, list[tuple[int, ContentItem]]] = {}
     for i, it in enumerate(items):
@@ -156,48 +236,58 @@ def analyze(items: list[ContentItem], scores: dict) -> dict[str, dict]:
         if len(sc) >= 3 and sc[2]:
             it.extra["sublabel"] = str(sc[2])
         by_cat.setdefault(c, []).append((i, it))
+
+    def _analyze_chunk(chunk: list[tuple[int, ContentItem]], tag: str) -> None:
+        c = chunk[0][1].category or 1
+        lines = "\n".join(
+            f"{j}| {it.score}分| [{_pubtag(it.published)}] "
+            f"{it.title} | 来源:{it.src}"
+            for j, (_, it) in enumerate(chunk))
+        spec = _analysis_field_spec(c)
+        prompt = (f"你是创业日报编辑，读者是中国创业者。以下{len(chunk)}条资讯（标题保持原语言）。"
+                  f"基于标题与你的知识，为每条生成中文分析。\n"
+                  f"每条输出JSON对象: {{{spec}}}\n"
+                  f"全部字段用中文（标题除外）。只输出JSON数组，无其他文字，无markdown围栏。\n\n{lines}")
+        for attempt in (1, 2):
+            try:
+                txt = _chat([{"role": "user", "content": prompt}], max_tokens=MAX_ANALYSIS_TOKENS)
+            except LLMError as e:
+                log.warning("analyze %s chunk fail(try%d): %s", tag, attempt, str(e)[:90])
+                continue
+            before = len(results)
+            arr = _extract_json_array(txt)
+            if arr:
+                _absorb(arr, chunk, results)
+            if len(results) - before < len(chunk):
+                # 整体数组解析失败/部分缺失：从残破输出逐对象抢救
+                _absorb(_extract_json_objects(txt), chunk, results)
+            got = len(results) - before
+            if got >= len(chunk):
+                log.info("analyze %s: +%d (total %d)", tag, got, len(results))
+                return
+            log.warning("analyze %s chunk parsed %d/%d (try%d); salvaged",
+                        tag, got, len(chunk), attempt)
+        missing = [it.title for _, it in chunk if it.title not in results]
+        if missing:
+            log.error("analyze %s 放弃 %d 条: %s", tag, len(missing),
+                      " | ".join(t[:50] for t in missing))
+
     for c, group in by_cat.items():
         group.sort(key=lambda x: -x[1].score)
         todo = [(i, it) for i, it in group if it.title not in results]
         batch_size = BATCH_ANALYSIS if c in (4, 5) else 8
         for start in range(0, len(todo), batch_size):
-            chunk = todo[start:start + batch_size]
-            lines = "\n".join(f"{j}| {it.score}分| {it.title} | 来源:{it.src}"
-                              for j, (_, it) in enumerate(chunk))
-            spec = _analysis_field_spec(c)
-            prompt = f"""你是创业日报编辑，读者是中国创业者。以下{len(chunk)}条资讯（标题保持原语言）。基于标题与你的知识，为每条生成中文分析。
-每条输出JSON对象: {{{spec}}}
-全部字段用中文（标题除外）。只输出JSON数组，无其他文字，无markdown围栏。
-
-{lines}"""
-            try:
-                txt = _chat([{"role": "user", "content": prompt}], max_tokens=MAX_ANALYSIS_TOKENS)
-            except LLMError as e:
-                log.warning("analyze %s chunk fail: %s", CAT_NAMES[c], e)
-                time.sleep(10)
-                try:
-                    txt = _chat([{"role": "user", "content": prompt}], max_tokens=MAX_ANALYSIS_TOKENS)
-                except LLMError as e2:
-                    log.warning("analyze %s retry fail: %s", CAT_NAMES[c], e2)
-                    continue
-            arr = _extract_json_array(txt)
-            if not arr:
-                log.warning("analyze %s chunk unparseable; retry once", CAT_NAMES[c])
-                time.sleep(8)
-                try:
-                    txt = _chat([{"role": "user", "content": prompt}], max_tokens=MAX_ANALYSIS_TOKENS)
-                except LLMError:
-                    continue
-                arr = _extract_json_array(txt)
-                if not arr:
-                    log.warning("analyze %s retry unparseable; skip", CAT_NAMES[c])
-                    continue
-            # 模型可能忽略 i 字段：按数组顺序与 chunk 对齐（模型输出顺序=输入顺序）
-            for idx, e in enumerate(arr[:len(chunk)]):
-                if not isinstance(e, dict) or not e.get("brief"):
-                    continue
-                results[chunk[idx][1].title] = e
-            log.info("analyze %s: +%d (total %d)", CAT_NAMES[c], min(len(arr), len(chunk)), len(results))
+            _analyze_chunk(todo[start:start + batch_size], CAT_NAMES[c])
+    # 残余兜底：仍缺分析的条目按 3 条小批重试一轮
+    leftover = [(i, it) for g in by_cat.values() for i, it in g if it.title not in results]
+    if leftover:
+        log.warning("analyze: %d 条缺分析，进入小批重试", len(leftover))
+        by_cat2: dict[int, list[tuple[int, ContentItem]]] = {}
+        for i, it in leftover:
+            by_cat2.setdefault(it.category or 1, []).append((i, it))
+        for c2, group2 in by_cat2.items():
+            for start in range(0, len(group2), 3):
+                _analyze_chunk(group2[start:start + 3], CAT_NAMES[c2] + "·补")
     return results
 
 
@@ -219,7 +309,7 @@ def tldr(selected: list[ContentItem], analyses: dict[str, dict]) -> Optional[dic
 
 {feed}"""
     try:
-        txt = _chat([{"role": "user", "content": prompt}], max_tokens=2000)
+        txt = _chat([{"role": "user", "content": prompt}], max_tokens=3000)
     except LLMError as e:
         log.warning("tldr fail: %s", e)
         return None

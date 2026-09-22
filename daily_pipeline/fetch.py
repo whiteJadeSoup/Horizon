@@ -97,12 +97,34 @@ def _strip_html(s: str) -> str:
 
 
 def _parse_dt(s: Optional[str]) -> Optional[dt.datetime]:
+    """解析日期字符串为 UTC-aware datetime。feedparser 6.x 移除了 _parse_date，
+    改为三层兕底：email.utils(RFC822/RSS 标准) → ISO8601 → feedparser.datetimes。
+    解析失败返回 None（调用方按无日期处理）。"""
     if not s:
         return None
+    s = s.strip()
+    p: Optional[dt.datetime] = None
     try:
-        return feedparser._parse_date(s)  # type: ignore[attr-defined]
+        from email.utils import parsedate_to_datetime
+        p = parsedate_to_datetime(s)
     except Exception:
+        pass
+    if p is None:
+        try:
+            p = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            pass
+    if p is None:
+        try:
+            from feedparser.datetimes import parse_date as _fp_parse
+            p = _fp_parse(s)
+        except Exception:
+            return None
+    if p is None:
         return None
+    if p.tzinfo is None:
+        p = p.replace(tzinfo=dt.timezone.utc)
+    return p.astimezone(dt.timezone.utc)
 
 
 async def fetch_all(cfg: SourceConfig, hours: int = 48) -> list[ContentItem]:
@@ -233,6 +255,8 @@ async def _fetch_reddit_via_redlib(
         return False
     # 解析 redlib HTML：h2.post_title > a[href]，作者 u/xxx，created title="... UTC"
     import re as _re
+    # 每个 href 在全文中的位置窗口内找 created 时间戳（避免在紧凑页面中张冠李戴）
+    _ts_re = _re.compile(r'title="([A-Z][a-z]{2} [ A-Z0-9:]{2,11}[0-9]{4}, [0-9:]{8} UTC)"')
     titles = _re.findall(
         r'<a[^>]*href="(/r/[^"]+/comments/[^"]+)"[^>]*>(.*?)</a>', html_text, _re.S)
     seen_url: set[str] = set()
@@ -247,13 +271,19 @@ async def _fetch_reddit_via_redlib(
         seen_url.add(title)
         full_url = f"https://www.reddit.com{href}" if href.startswith("/") else href
         p = None
-        m = _re.search(r'title="([^"]*UTC)"', html_text[max(0, html_text.find(href) - 400):html_text.find(href)])
-        if m:
-            try:
-                p = dt.datetime.strptime(m.group(1), "%b %d %Y, %H:%M:%S UTC").replace(tzinfo=dt.timezone.utc)
-            except ValueError:
-                p = None
-        if p and p < since:
+        pos = html_text.find(href)
+        if pos >= 0:
+            m = _ts_re.search(html_text[max(0, pos - 500):pos + 400])
+            if m:
+                try:
+                    p = dt.datetime.strptime(m.group(1), "%b %d %Y, %H:%M:%S UTC").replace(tzinfo=dt.timezone.utc)
+                except ValueError:
+                    p = None
+        if p is None:
+            # 解析不出日期的条目（如 top 页面的老贴）一律丢弃，防止多年旧文混入日报
+            log.info("Redlib r/%s: drop no-date item %s", sub, title[:40])
+            continue
+        if p < since:
             continue
         out.append(ContentItem(title=title, url=full_url, src=f"r/{sub}", cat=cat, published=p))
         count += 1
