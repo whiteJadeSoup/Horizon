@@ -10,7 +10,7 @@ LOG="data/daily/run-$(date +%Y-%m-%d).log"
 LOCK=/tmp/horizon-gen.lock
 if mkdir "$LOCK" 2>/dev/null; then
   echo $$ > "$LOCK/pid"
-  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+  trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
 else
   oldpid=$(cat "$LOCK/pid" 2>/dev/null)
   if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
@@ -19,7 +19,7 @@ else
   fi
   echo "==== $(date '+%F %T') stale lock (pid ${oldpid:-?}), taking over ====" >> "$LOG"
   rm -rf "$LOCK"; mkdir "$LOCK"; echo $$ > "$LOCK/pid"
-  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+  trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
 fi
 echo "==== run start $(date '+%F %T') pid $$ ====" >> "$LOG"
 (
