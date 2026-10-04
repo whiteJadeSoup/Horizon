@@ -11,57 +11,32 @@ import json
 import logging
 import os
 import re
-import time
 from typing import Any, Optional
 
 from .fetch import CAT_NAMES, ContentItem
+from src.ai.codex_subscription import complete_subscription, SubscriptionError
 
 log = logging.getLogger("horizon_daily.llm")
 
-MODEL = os.environ.get("HORIZON_LLM_MODEL", "glm-5-3-flash")
-BASE_URL = os.environ.get("HORIZON_LLM_BASE", "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions")
+MODEL = os.environ.get("HORIZON_CODEX_MODEL", "gpt-6.1-sol")
 MAX_ANALYSIS_TOKENS = 8000
 BATCH_SCORE = 35  # 打分 prompt v8 (2026-09-22): 时效审查淘汰旧文 + 行内附发布日期
 BATCH_ANALYSIS = 6   # 五要素板块更小批次防截断
-RETRIES = 4
 
 
 class LLMError(RuntimeError):
     pass
 
 
-def _headers() -> dict:
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
-        raise LLMError("OPENAI_API_KEY not set")
-    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-
 def _chat(messages: list[dict], max_tokens: int = 4000, temperature: float = 0.3) -> str:
-    """同步调用（管线是串行步骤，够用）。返回模型文本，校验 finish_reason==stop。"""
-    import urllib.request
+    """Codex 订阅文本调用；不使用 API key，不允许回退至旧提供商。
 
-    body = json.dumps({"model": MODEL, "messages": messages,
-                       "temperature": temperature, "max_tokens": max_tokens}).encode()
-    req = urllib.request.Request(BASE_URL, data=body, headers=_headers())
-    # 方舟调用显式直连（ProxyHandler({}) 绕开环境代理）：
-    # run.py 不再全局剥代理，X 抓取需保留代理注入 secret，此处必须独立直连。
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    last: Optional[Exception] = None
-    for a in range(RETRIES):
-        try:
-            with opener.open(req, timeout=240) as r:
-                resp = json.load(r)
-            ch = resp["choices"][0]
-            if ch.get("finish_reason") != "stop":
-                raise LLMError(f"finish_reason={ch.get('finish_reason')} (truncated)")
-            return ch["message"]["content"]
-        except Exception as e:
-            last = e
-            wait = 8 * (a + 1)
-            log.warning("LLM call fail (try %d): %s; wait %ds", a + 1, str(e)[:90], wait)
-            time.sleep(wait)
-    raise LLMError(f"LLM call failed after {RETRIES} tries: {last}")
+    Sampling temperature is not supported by the subscription runtime.
+    """
+    try:
+        return complete_subscription(messages, model=MODEL, max_tokens=max_tokens)
+    except SubscriptionError as e:
+        raise LLMError(str(e)) from e
 
 
 def _strip_fence(txt: str) -> str:

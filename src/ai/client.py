@@ -539,9 +539,31 @@ def _uses_anthropic_compatible_api(config: AIConfig) -> bool:
     return config.provider == AIProvider.MINIMAX and base_url.endswith("/anthropic")
 
 
+class CodexSubscriptionClient(AIClient):
+    """Reuse OpenClaw subscription auth for the native Horizon CLI/MCP path."""
+
+    def __init__(self, config: AIConfig):
+        if config.provider_chain or config.base_url or config.api_key_env:
+            raise ValueError("Codex subscription does not support API keys or fallback chains")
+        self.config = config
+
+    async def complete(self, system, user, temperature=None, max_tokens=None) -> str:
+        import asyncio
+        from .codex_subscription import complete_subscription
+
+        return await asyncio.to_thread(
+            complete_subscription,
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            model=self.config.model,
+            max_tokens=max_tokens or self.config.max_tokens,
+        )
+
+
 def _create_single_client(config: AIConfig) -> AIClient:
     """Create a single AI client instance."""
-    if (
+    if config.provider == AIProvider.CODEX_SUBSCRIPTION:
+        return CodexSubscriptionClient(config)
+    elif (
         config.provider == AIProvider.ANTHROPIC
         or _uses_anthropic_compatible_api(config)
     ):

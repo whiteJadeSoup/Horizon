@@ -15,7 +15,7 @@ from typing import Optional
 
 # 注意：此处不再全局剥代理。
 # X 抓取（twitterapi.io）依赖网关代理自动注入 TWITTERAPI_IO_KEY 密文句柄 → 真 key；
-# 方舟 LLM 调用在 llm.py 内用 ProxyHandler({}) 显式直连，其余抓取源用 trust_env=False 直连，互不干扰。
+# LLM 通过 OpenClaw Codex 订阅运行；其余抓取源用 trust_env=False 直连，互不干扰。
 
 from . import deliver, fetch, llm, render  # noqa: E402
 

@@ -123,6 +123,7 @@ class AIProvider(str, Enum):
 
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    CODEX_SUBSCRIPTION = "codex_subscription"
     AZURE = "azure"
     ALI = "ali"
     GEMINI = "gemini"
@@ -134,6 +135,11 @@ class AIProvider(str, Enum):
 
 # Provider-specific defaults used by setup and provider-chain expansion.
 AI_PROVIDER_DEFAULTS = {
+    AIProvider.CODEX_SUBSCRIPTION: {
+        "model": "gpt-6.1-sol",
+        "api_key_env": "",
+        "base_url": None,
+    },
     AIProvider.ANTHROPIC: {
         "model": "claude-3-5-sonnet-20241022",
         "api_key_env": "ANTHROPIC_API_KEY",
